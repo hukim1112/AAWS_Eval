@@ -30,7 +30,7 @@ AAWS_Eval/
  └── artifacts/                # 샌드박스 환경 결과물 및 생성된 파일 (자동 생성)
       ├── scenarios/           # 테스트 시나리오 마크다운 파일 (.md) 모음
       ├── code/                # Coder 에이전트가 제한된 환경에서 작성한 크롤링 스크립트 저장소
-      └── [scenario_id]/       # 시나리오별 실행 평가 로그(_log.md)와 추출된 결과 데이터(_result.json)
+      └── results/[scenario_id]/       # 시나리오별 실행 평가 로그(_log.md)와 추출된 결과 데이터(_result.json)
 
  └── samples/                  # 참고용 샘플 코드
       └── nano_banana_image_gen.py  # Gemini 이미지 생성(Nano Banana) 예제
