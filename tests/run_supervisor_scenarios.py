@@ -58,7 +58,10 @@ async def run_scenario(scenario_file: str):
 
     import uuid
     thread_id = f"scenario_test_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": 150
+    }
     
     print("⏳ 에이전트 수행 중 (상당한 시간이 소요될 수 있습니다)...")
     
@@ -100,10 +103,13 @@ async def run_scenario(scenario_file: str):
             elif kind == "on_chat_model_end":
                 output = event["data"].get("output")
                 if output and hasattr(output, "content"):
-                    final_message = output.content
-                    print()
-                    with open(log_output_path, "a", encoding="utf-8") as f:
-                        f.write("\n\n---\n")
+                    content = output.content
+                    # 빈 content나 tool_call만 있는 경우 무시 (빈 줄 폭탄 방지)
+                    if content and isinstance(content, str) and content.strip():
+                        final_message = content
+                        print()
+                        with open(log_output_path, "a", encoding="utf-8") as f:
+                            f.write("\n\n---\n")
 
         print("\n✅ 시나리오 에이전트 수행 완료! 평가(Evaluator) 단계로 넘어갑니다...")
         print("-" * 60)
@@ -141,7 +147,7 @@ async def main():
     # 테스트할 시나리오만 주석 해제(Uncomment)하여 사용하세요.
     target_scenarios = [
         # ── Level 1 ──
-        "quotes_01_pagination.md",
+        # "quotes_01_pagination.md",
         # "quotes_02_tag_filter.md",
         # ── Level 2 ~ 2.5 ──
         # "ajax_01_playwright_wait.md",
@@ -153,7 +159,7 @@ async def main():
         # "danawa_01_filter_search.md",           # AJAX + 필터 UI
         # "danawa_02_deep_table_parsing.md",      # 중첩 테이블 + 동적 버튼
         # ── Level 5 (최고 난이도) ──
-        # "danawa_03_bulk_detail_crawling.md",    # 2단계 대량 수집
+        "danawa_03_bulk_detail_crawling.md",    # 2단계 대량 수집
     ]
     
     scenario_files = []

@@ -39,6 +39,154 @@ class CostTracker:
 
 _cost_tracker = CostTracker()
 
+# ═══════════════════════════════════════════════════════
+# DOM 스켈레톤 뷰어 (Lesson 10: 정보의 압축 원칙 적용)
+# ═══════════════════════════════════════════════════════
+
+def _build_skeleton(element, depth: int = 0, max_depth: int = 6, sibling_limit: int = 3) -> list[str]:
+    """HTML 요소를 재귀적으로 순회하며 구조 맵을 생성합니다.
+    
+    - 같은 태그+클래스가 반복되면 그룹으로 축약 (예: li.prod_item ×30)
+    - 각 노드에 첫 번째 텍스트와 주요 속성(href, src 등)을 샘플로 표시
+    - 광고/실제 상품 등 구조적 차이가 있으면 별도 그룹으로 분리되어 자연스럽게 드러남
+    """
+    from bs4 import Tag
+    from collections import Counter
+    
+    if depth > max_depth or not hasattr(element, 'children'):
+        return []
+    
+    lines = []
+    indent = "  " * depth
+    
+    # 자식 요소를 시그니처(tag+class)별로 그룹화
+    children = [c for c in element.children if isinstance(c, Tag)]
+    signature_groups = {}  # {signature: [elements]}
+    order = []  # 등장 순서 보존
+    
+    for child in children:
+        cls = " ".join(child.get("class", []))
+        sig = f"{child.name}.{cls}" if cls else child.name
+        if sig not in signature_groups:
+            signature_groups[sig] = []
+            order.append(sig)
+        signature_groups[sig].append(child)
+    
+    for sig in order:
+        group = signature_groups[sig]
+        representative = group[0]
+        count = len(group)
+        
+        # 주요 속성 수집 (href, src 등)
+        attrs = []
+        href = representative.get("href", "")
+        if href:
+            # URL은 앞 80자만 표시
+            attrs.append(f'href="{href[:80]}{"..." if len(href) > 80 else ""}"')
+        src = representative.get("src", "")
+        if src:
+            attrs.append(f'src="{src[:60]}..."')
+        id_attr = representative.get("id", "")
+        if id_attr:
+            attrs.append(f'id="{id_attr}"')
+        
+        # 직접 텍스트 (자식 태그 제외) 샘플
+        direct_text = representative.get_text(strip=True)[:60] if representative.string or (not list(representative.children) or len(list(representative.children)) <= 2) else ""
+        
+        # 자식 수
+        child_count = len([c for c in representative.children if isinstance(c, Tag)])
+        
+        # 한 줄 생성
+        attr_str = f" [{', '.join(attrs)}]" if attrs else ""
+        text_str = f' → "{direct_text}"' if direct_text and len(direct_text) > 1 else ""
+        count_str = f" (×{count})" if count > 1 else ""
+        children_str = f" (children: {child_count})" if child_count > 0 else ""
+        
+        line = f"{indent}├─ {sig}{count_str}{attr_str}{children_str}{text_str}"
+        lines.append(line)
+        
+        # 반복 그룹이면: 대표 1개 + (구조가 다른 것이 있으면) 변형 1개만 펼침
+        if count > 1:
+            # 대표 요소만 재귀 (sibling_limit으로 제한)
+            child_lines = _build_skeleton(representative, depth + 1, max_depth, sibling_limit)
+            lines.extend(child_lines)
+            
+            # 구조적 변형 탐지: 두 번째 요소의 시그니처가 다르면 별도 표시
+            if count > 1 and len(group) > 1:
+                second = group[1]
+                second_child_sigs = [f"{c.name}.{' '.join(c.get('class', []))}" for c in second.children if isinstance(c, Tag)]
+                first_child_sigs = [f"{c.name}.{' '.join(c.get('class', []))}" for c in representative.children if isinstance(c, Tag)]
+                if second_child_sigs != first_child_sigs:
+                    lines.append(f"{indent}  ⚠️ 구조 변형 발견 — 2번째 {sig}의 자식 구조가 다름:")
+                    variant_lines = _build_skeleton(second, depth + 1, max_depth, sibling_limit)
+                    lines.extend(variant_lines)
+        else:
+            child_lines = _build_skeleton(representative, depth + 1, max_depth, sibling_limit)
+            lines.extend(child_lines)
+    
+    return lines
+
+
+@tool(parse_docstring=True)
+async def extract_dom_skeleton(url: str, root_selector: str = "body", max_depth: int = 6, wait_seconds: float = 3.0) -> str:
+    """페이지의 DOM 트리 구조를 간결한 스켈레톤(구조 맵)으로 반환합니다.
+    
+    300KB의 HTML 원문 대신, 태그/클래스/ID/자식 수/샘플 텍스트만 추출한 경량 트리(~5KB)를 제공합니다.
+    이를 통해 반복되는 노드 그룹의 구조적 차이(예: 광고 vs 실제 상품, 일반 행 vs 헤더 행)를
+    LLM이 효율적으로 식별할 수 있습니다.
+    
+    [사용 시나리오]
+    - get_page_structure가 잘못된 셀렉터를 반환할 때 → 이 도구로 DOM 구조를 직접 확인
+    - 복잡한 사이트에서 광고/실제 콘텐츠의 구조적 차이를 파악해야 할 때
+    - 페이지네이션, 탭, 더보기 등 동적 UI 요소의 DOM 위치를 파악해야 할 때
+    
+    Args:
+        url: 분석할 웹페이지 URL
+        root_selector: 분석을 시작할 루트 요소의 CSS 셀렉터 (기본값: body). 특정 영역만 분석하고 싶을 때 사용합니다. (예: '.main_prodlist', '#content')
+        max_depth: DOM 트리 탐색 최대 깊이 (기본값: 6). 너무 깊으면 출력이 길어지고, 너무 얕으면 세부 구조를 놓칩니다.
+        wait_seconds: 페이지 로드 후 AJAX 대기 시간(초). 동적 사이트는 5~8초를 권장합니다.
+    """
+    print(f"\n🦴 [extract_dom_skeleton] {url} (root: {root_selector}, depth: {max_depth}, wait: {wait_seconds}s)")
+    
+    browser_cfg = BrowserConfig(headless=True, java_script_enabled=True)
+    run_cfg = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, page_timeout=30000, delay_before_return_html=wait_seconds)
+
+    try:
+        async with AsyncWebCrawler(config=browser_cfg) as crawler:
+            result = await crawler.arun(url=url, config=run_cfg)
+    except Exception as e:
+        return f"[Error] HTML 수집 실패: {e}\n→ browse_web으로 시각적 분석을 시도하세요."
+
+    raw_html = result.html or ""
+    soup = BeautifulSoup(raw_html, "html.parser")
+    
+    # 불필요한 비콘텐츠 태그만 제거 (script, style 등)
+    # ⚠️ 광고 등 특정 클래스는 절대 제거하지 않음 — LLM이 구조적 차이를 보고 스스로 판단해야 함
+    for tag in soup(["script", "style", "noscript", "svg", "path", "link", "meta"]):
+        tag.decompose()
+    
+    # 루트 요소 탐색
+    root = soup.select_one(root_selector)
+    if not root:
+        return f"[Warning] '{root_selector}' 셀렉터에 해당하는 요소를 찾지 못했습니다.\n사용 가능한 최상위 요소: {[t.name + ('.' + '.'.join(t.get('class', [])) if t.get('class') else '') for t in soup.body.children if hasattr(t, 'name') and t.name][:10]}"
+    
+    # 스켈레톤 생성
+    skeleton_lines = _build_skeleton(root, depth=0, max_depth=max_depth)
+    
+    root_cls = " ".join(root.get("class", []))
+    root_sig = f"{root.name}.{root_cls}" if root_cls else root.name
+    header = f"🦴 DOM Skeleton: {url}\n📍 Root: {root_sig}\n{'─' * 60}"
+    
+    skeleton_text = header + "\n" + "\n".join(skeleton_lines)
+    
+    # 크기 제한 (안전장치)
+    if len(skeleton_text) > 15000:
+        skeleton_text = skeleton_text[:15000] + "\n\n⚠️ [출력 잘림] max_depth를 줄이거나 root_selector를 더 구체적으로 지정하세요."
+    
+    print(f"  → 스켈레톤 생성 완료: {len(skeleton_lines)}줄, {len(skeleton_text)}자")
+    return skeleton_text
+
+
 @tool(parse_docstring=True)
 async def get_page_structure(url: str, scraping_goal: str, wait_seconds: float = 2.0) -> str:
     """웹페이지 HTML을 내부 LLM이 직접 분석하여 CSS 셀렉터 결과만 반환합니다.
@@ -93,11 +241,12 @@ async def get_page_structure(url: str, scraping_goal: str, wait_seconds: float =
 
 @tool(parse_docstring=True)
 async def verify_selectors_with_samples(url: str, selectors_json: str) -> str:
-    """찾아낸 CSS 셀렉터가 실제로 데이터를 가져오는지 검증합니다.
+    """찾아낸 CSS 셀렉터가 실제로 데이터를 가져오는지 브라우저로 검증합니다.
+    기본적으로 요소의 텍스트를 반환하며, 속성(href, src 등)이 필요하면 ::attr() 구문을 사용하세요.
     
     Args:
         url: 검증할 웹페이지 URL
-        selectors_json: JSON 문자열로 된 셀렉터 딕셔너리 예) '{"title": "a.title"}'
+        selectors_json: JSON 문자열로 된 셀렉터 딕셔너리. 텍스트 추출 예) '{"title": "a.title"}'. 속성 추출 시 ::attr() 구문 사용 예) '{"link": "a.title::attr(href)", "image": "img.thumb::attr(src)"}'
     """
     print(f"\n🔍 [verify_selectors] {url}")
     try: sel_dict = json.loads(selectors_json)
@@ -141,26 +290,7 @@ async def browse_web(runtime: ToolRuntime[NavigatorContext], url: str, instructi
         purpose: 이 액션의 목적 (예: '쇼핑몰 리스트를 전부 펼치기 위해')
         context: Navigator가 파악한 현재까지의 전략적 상황 (예: '검색 결과 페이지에서 첫 번째 상품의 상세 페이지 URL을 확보해야 함. 광고 브릿지 URL이 아닌 실제 상세 페이지 URL이 필요.')
     """
-    # browser-use 내부 에이전트용 행동 가이드
-    BROWSER_AGENT_GUIDE = """[당신의 역할]
-당신은 데이터 스크래핑 파이프라인의 일부로, 상위 에이전트(Navigator)의 지시를 받아 브라우저를 조작합니다.
-스크래핑 작업에서는 속도와 정확성이 핵심이므로, 아래 원칙을 따르세요.
-
-[효율적 행동 원칙]
-1. evaluate는 단독 사용: evaluate()는 다른 액션과 같은 스텝에 넣지 마세요. evaluate는 시퀀스를 종료시켜 뒤의 액션이 취소됩니다.
-   → URL 확인이 필요하면 evaluate만 단독으로 한 스텝에 실행하고, 다음 스텝에서 find_elements를 하세요.
-   → URL 확인은 최초 1회만 하세요. 이미 확인한 URL을 반복 확인하지 마세요.
-2. 읽기 > 클릭: URL이나 텍스트를 알아내야 할 때, 클릭하여 이동하는 대신 find_elements로 href/textContent를 직접 읽으세요.
-   → 이유: 클릭은 페이지 전환, 팝업, 리다이렉트 등 예측 불가능한 부작용을 유발합니다.
-3. 반복 금지: 같은 액션(같은 셀렉터, 같은 evaluate 코드)을 2번 이상 실행하지 마세요. 결과가 같으면 즉시 다른 접근법을 시도하세요.
-   → 이유: 동일 행동의 반복은 스텝 예산을 소진시키고 루프에 빠지게 합니다.
-4. 광고/트래킹 URL 구별: bridge, redirect, tracking, ad, affiliate 등의 키워드가 포함된 URL은 광고 리다이렉트일 가능성이 높습니다. 이런 URL은 무시하고 사이트 본래의 상세 페이지 URL 패턴을 찾으세요.
-   → 이유: 광고 URL을 따라가면 Access Denied 등의 장벽에 막혀 스텝이 낭비됩니다.
-5. DOM 구조 분석: 셀렉터를 찾아야 할 때는 find_elements보다 evaluate()로 JavaScript를 실행하여 DOM 트리를 직접 읽으세요.
-   → 이유: find_elements는 매칭 갯수만 반환하고 DOM 계층 구조는 보여주지 않습니다.
-6. 빠른 실패 보고: 페이지 내용이 요청과 맞지 않으면 (예: 키보드를 찾는데 의류 페이지가 나옴) 즉시 done(text="[FAIL] 이유: ...", success=False)로 실패를 보고하세요. 3스텝 이내에 원하는 데이터를 찾지 못하면 더 이상 시도하지 말고 실패를 보고하세요.
-   → 이유: 잘못된 페이지에서 12스텝을 소진하면 전체 파이프라인의 예산이 낭비됩니다.
-"""
+    from src.prompts.navigator import BROWSER_AGENT_GUIDE
 
     # Navigator가 전달한 전략적 컨텍스트 조합
     task_parts = [BROWSER_AGENT_GUIDE]
@@ -175,7 +305,7 @@ async def browse_web(runtime: ToolRuntime[NavigatorContext], url: str, instructi
     
     task = "\n\n".join(task_parts)
 
-    llm = ChatOpenAI(model="gpt-5-mini")
+    llm = ChatOpenAI(model="gpt-4.1-mini")
     user_browser = getattr(runtime.context, "shared_browser", None)
     
     if user_browser:
